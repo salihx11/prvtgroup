@@ -110,7 +110,7 @@ def get_rank(user_id, chat_id):
     conn.close()
     return (xp, int(level), rank
 
-def get_top_users(chat_id, limit=10000):
+get_top_users(chat_id, limit=10000):
     conn = sqlite3.connect('bot.db')
     c = conn.cursor()
     
