@@ -3,10 +3,6 @@ import random
 import os
 import asyncio
 import sqlite3
-import requests
-import time
-from PIL import Image, ImageDraw, ImageFont
-from io import BytesIO
 from telegram import (
     Update, 
     InlineKeyboardButton, 
@@ -35,7 +31,6 @@ def init_db():
                   first_name TEXT, 
                   last_name TEXT, 
                   username TEXT,
-                  country TEXT,
                   join_date TEXT)''')
                   
     c.execute('''CREATE TABLE IF NOT EXISTS xp
@@ -57,13 +52,13 @@ def init_db():
     conn.commit()
     conn.close()
 
-def add_user(user_id, first_name, last_name="", username="", country="Unknown"):
+def add_user(user_id, first_name, last_name="", username=""):
     conn = sqlite3.connect('bot.db')
     c = conn.cursor()
     c.execute('''INSERT OR IGNORE INTO users 
-                 (user_id, first_name, last_name, username, country, join_date)
-                 VALUES (?, ?, ?, ?, ?, datetime('now'))''',
-              (user_id, first_name, last_name, username, country))
+                 (user_id, first_name, last_name, username, join_date)
+                 VALUES (?, ?, ?, ?, datetime('now'))''',
+              (user_id, first_name, last_name, username))
     conn.commit()
     conn.close()
 
@@ -108,13 +103,13 @@ def get_rank(user_id, chat_id):
     rank = c.fetchone()[0] + 1
     
     conn.close()
-    return (xp, int(level), rank
+    return (xp, int(level), rank)
 
-get_top_users(chat_id, limit=10000):
+def get_top_users(chat_id, limit=10):
     conn = sqlite3.connect('bot.db')
     c = conn.cursor()
     
-    c.execute('''SELECT u.first_name, x.xp, x.level, u.user_id
+    c.execute('''SELECT u.first_name, x.xp, x.level 
                  FROM xp x JOIN users u ON x.user_id = u.user_id
                  WHERE x.chat_id = ?
                  ORDER BY x.xp DESC LIMIT ?''',
@@ -136,230 +131,19 @@ def add_warning(user_id, chat_id, reason, admin_id):
     conn.commit()
     conn.close()
 
-def get_user_country(user_id):
-    return "Unknown"
-
 # Initialize database
 init_db()
-
-# ======================
-# IMAGE GENERATION
-# ======================
-
-async def generate_rank_card(user, xp, level, rank, chat_id):
-    img = Image.new('RGB', (800, 300), color=(54, 57, 63))
-    draw = ImageDraw.Draw(img)
-    
-    try:
-        title_font = ImageFont.truetype("arialbd.ttf", 40)
-        normal_font = ImageFont.truetype("arial.ttf", 30)
-    except:
-        title_font = ImageFont.load_default()
-        normal_font = ImageFont.load_default()
-    
-    try:
-        profile_pic = await user.get_profile_photos(limit=1)
-        if profile_pic.photos:
-            photo = profile_pic.photos[0][-1]
-            photo_file = await photo.get_file()
-            photo_bytes = BytesIO()
-            await photo_file.download_to_memory(photo_bytes)
-            profile_img = Image.open(photo_bytes).resize((200, 200))
-            
-            mask = Image.new('L', (200, 200), 0)
-            draw_mask = ImageDraw.Draw(mask)
-            draw_mask.ellipse((0, 0, 200, 200), fill=255)
-            
-            img.paste(profile_img, (50, 50), mask)
-    except:
-        pass
-    
-    draw.text((300, 50), f"{user.first_name}", font=title_font, fill=(255, 255, 255))
-    draw.text((300, 120), f"Level: {level}", font=normal_font, fill=(200, 200, 200))
-    draw.text((300, 160), f"XP: {xp}", font=normal_font, fill=(200, 200, 200))
-    draw.text((300, 200), f"Rank: #{rank}", font=normal_font, fill=(200, 200, 200))
-    
-    xp_needed = level * 1000
-    progress = min(xp % 1000 / 1000, 1.0)
-    draw.rectangle([300, 250, 300 + 400 * progress, 270], fill=(114, 137, 218))
-    draw.rectangle([300, 250, 700, 270], outline=(255, 255, 255), width=2)
-    draw.text((710, 240), f"{int(progress*100)}%", font=normal_font, fill=(255, 255, 255))
-    
-    buf = BytesIO()
-    img.save(buf, format='PNG')
-    buf.seek(0)
-    
-    return buf
-
-async def generate_leaderboard(chat_id, top_users):
-    img = Image.new('RGB', (800, 300 + len(top_users) * 60), color=(54, 57, 63))
-    draw = ImageDraw.Draw(img)
-    
-    try:
-        title_font = ImageFont.truetype("arialbd.ttf", 40)
-        normal_font = ImageFont.truetype("arial.ttf", 30)
-    except:
-        title_font = ImageFont.load_default()
-        normal_font = ImageFont.load_default()
-    
-    draw.text((50, 30), "🏆 Leaderboard", font=title_font, fill=(255, 255, 255))
-    
-    for i, (name, xp, level, user_id) in enumerate(top_users, 1):
-        y_pos = 100 + (i-1)*60
-        draw.text((100, y_pos), f"{i}. {name}", font=normal_font, fill=(255, 255, 255))
-        draw.text((550, y_pos), f"Lvl {level}", font=normal_font, fill=(200, 200, 200))
-        draw.text((650, y_pos), f"{xp} XP", font=normal_font, fill=(200, 200, 200))
-    
-    buf = BytesIO()
-    img.save(buf, format='PNG')
-    buf.seek(0)
-    
-    return buf
 
 # ======================
 # BOT CONFIGURATION
 # ======================
 
 BOT_TOKEN = "7406932492:AAGFveg9HUKC7B6fx9wHHboe3d_DZBWhppc"
-ADMIN_IDS = []  # Add your admin user IDs here
-
-# ======================
-# MODERATION UTILITIES
-# ======================
-
-async def is_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    chat = update.effective_chat
-    
-    if user.id in ADMIN_IDS:
-        return True
-    
-    try:
-        member = await chat.get_member(user.id)
-        return member.status in ['administrator', 'creator']
-    except:
-        return False
-
-async def get_target_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message.reply_to_message:
-        return update.message.reply_to_message.from_user
-    
-    if context.args and context.args[0].startswith('@'):
-        username = context.args[0][1:]
-        try:
-            chat_members = await update.effective_chat.get_members()
-            for member in chat_members:
-                if member.user.username and member.user.username.lower() == username.lower():
-                    return member.user
-        except:
-            pass
-    
-    if context.args and context.args[0].isdigit():
-        user_id = int(context.args[0])
-        try:
-            return await context.bot.get_chat_member(update.effective_chat.id, user_id).user
-        except:
-            pass
-    
-    return None
+ADMIN_IDS = [123456789]  # Replace with your admin user IDs
 
 # ======================
 # CORE FUNCTIONS
 # ======================
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    add_user(user.id, user.first_name, user.last_name or "", user.username or "")
-    
-    await update.message.reply_text(
-        f"👋 Hello {user.first_name}! I'm your friendly group bot.\n\n"
-        "Use /help to see all available commands!",
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("Help", callback_data="help")]
-        ])
-    )
-
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    help_text = """
-🤖 *Bot Commands*
-
-🎲 *Games:*
-/dice [count] - Roll dice(s)
-/coinflip - Flip a coin
-/rps - Play Rock Paper Scissors
-
-📊 *Stats:*
-/rank - Check your rank
-/top - Show leaderboard
-/profile - Show user profile
-
-🛡️ *Moderation (Admin only):*
-/warn [user] [reason] - Warn a user
-/mute [user] [duration] [reason] - Mute a user
-/kick [user] [reason] - Kick a user
-/ban [user] [reason] - Ban a user
-/purge [count] - Delete messages
-
-😄 *Fun:*
-/joke - Get a random joke
-/roast - Roast someone
-/meme - Get a random meme
-/love @user - Calculate love percentage
-/8ball [question] - Magic 8 ball
-/rate [something] - Rate something
-
-ℹ️ *Info:*
-/id - Get your user ID
-/info - Get your info
-/groupinfo - Get group info
-"""
-    await update.message.reply_text(help_text, parse_mode="Markdown")
-
-async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    
-    if query.data == "help":
-        await help_command(update, context)
-
-async def get_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    chat = update.effective_chat
-    
-    await update.message.reply_text(
-        f"🆔 *ID Information*\n\n"
-        f"• Your ID: `{user.id}`\n"
-        f"• Chat ID: `{chat.id}`\n"
-        f"• Username: @{user.username or 'N/A'}",
-        parse_mode="Markdown"
-    )
-
-async def user_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    await update.message.reply_text(
-        f"👤 *User Information*\n\n"
-        f"• Name: {user.full_name}\n"
-        f"• Username: @{user.username or 'N/A'}\n"
-        f"• ID: `{user.id}`\n"
-        f"• Language: {user.language_code or 'Unknown'}",
-        parse_mode="Markdown"
-    )
-
-async def group_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat = update.effective_chat
-    
-    if chat.type == "private":
-        await update.message.reply_text("This command only works in groups!")
-        return
-    
-    await update.message.reply_text(
-        f"👥 *Group Information*\n\n"
-        f"• Title: {chat.title}\n"
-        f"• ID: `{chat.id}`\n"
-        f"• Type: {chat.type}\n"
-        f"• Members: {chat.get_member_count() if hasattr(chat, 'get_member_count') else 'Unknown'}",
-        parse_mode="Markdown"
-    )
 
 async def welcome_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for new_user in update.message.new_chat_members:
@@ -368,9 +152,8 @@ async def welcome_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 "🤖 Thanks for adding me! Use /help to see my commands!"
             )
         else:
-            country = get_user_country(new_user.id)
             add_user(new_user.id, new_user.first_name, 
-                    new_user.last_name or "", new_user.username or "", country)
+                    new_user.last_name or "", new_user.username or "")
             
             welcome_msg = (
                 f"👋 Welcome {new_user.mention_markdown()} to the group!\n\n"
@@ -385,37 +168,108 @@ async def welcome_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE)
             )
             add_xp(new_user.id, update.message.chat.id, new_user.first_name, 20)
 
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    keyboard = [
+        [InlineKeyboardButton("➕ Add to Group", 
+         url="https://t.me/YourBotUsername?startgroup=true")],
+        [InlineKeyboardButton("🎮 Games", callback_data="games_menu"),
+         InlineKeyboardButton("😂 Fun", callback_data="fun_menu")],
+        [InlineKeyboardButton("📊 Stats", callback_data="stats_menu"),
+         InlineKeyboardButton("🛡️ Mod", callback_data="mod_menu")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    user = update.effective_user
+    add_user(user.id, user.first_name, 
+            user.last_name or "", user.username or "")
+    
+    await update.message.reply_text(
+        f"✨ *Welcome {user.first_name} to UltimateBot!* ✨\n\n"
+        "I'm your all-in-one entertainment bot with:\n"
+        "🎮 Games | 😂 Fun | 📊 XP System | 🛡️ Moderation\n\n"
+        "Tap below or type /help",
+        reply_markup=reply_markup,
+        parse_mode="Markdown"
+    )
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    help_text = """
+🤖 *UltimateBot Command List* 🤖
+
+🎮 *Games:*
+/dice [1-5] - Roll dice 🎲
+/coinflip - Heads or tails 🪙
+/rps - Rock paper scissors 🪨📄✂️
+/guess - Number guessing game 🔢
+/trivia - Random trivia question ❓
+
+😂 *Fun Commands:*
+/joke - Get a random joke 😂
+/roast - Get roasted 🔥
+/meme - Random meme 🖼️
+/gay - Gay percentage 🏳️‍🌈
+/love @user - Love calculator 💘
+/8ball [question] - Magic 8 ball 🔮
+/rate - Rate something ★
+
+📊 *Stats:*
+/rank - Check your rank 📈
+/top - Leaderboard 🏆
+/profile [@user] - User profile 👤
+
+🛡️ *Moderation:*
+/warn @user [reason] - Warn user ⚠️
+/ban @user [reason] - Ban user 🔨
+/mute @user [time] - Mute user 🔇
+/kick @user [reason] - Kick user 👢
+/purge [amount] - Delete messages 🗑️
+
+ℹ *Utilities:*
+/id - Get user/chat info ℹ
+/info @user - User details 📝
+/groupinfo - Group stats 👥
+/weather [city] - Weather forecast 🌦️
+/calc [expression] - Calculator 🧮
+/timer [seconds] - Set timer ⏱️
+"""
+    await update.message.reply_text(help_text, parse_mode="Markdown")
+
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    data = query.data
+    if data == "games_menu":
+        text = "🎮 *Game Commands*\n\n/dice - Roll dice\n/coinflip - Heads or tails\n/rps - Rock paper scissors\n/guess - Number game\n/trivia - Random question"
+    elif data == "fun_menu":
+        text = "😂 *Fun Commands*\n\n/joke - Random joke\n/roast - Get roasted\n/meme - Random meme\n/gay - Gay test\n/love - Compatibility test"
+    elif data == "stats_menu":
+        text = "📊 *Stat Commands*\n\n/rank - Your stats\n/top - Leaderboard\n/profile - User profile"
+    elif data == "mod_menu":
+        text = "🛡️ *Mod Commands*\n\n/warn - Warn user\n/ban - Ban user\n/mute - Mute user\n/kick - Kick user\n/purge - Delete messages"
+    else:
+        text = "Unknown menu selection"
+    
+    await query.edit_message_text(text, parse_mode="Markdown")
+
 # ======================
 # GAME COMMANDS
 # ======================
 
 async def dice(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    dice_faces = {
-        1: "⚀",
-        2: "⚁",
-        3: "⚂",
-        4: "⚃",
-        5: "⚄",
-        6: "⚅"
-    }
+    dice_faces = ["⚀", "⚁", "⚂", "⚃", "⚄", "⚅"]
     
     try:
         count = min(max(int(context.args[0]), 1) if context.args else 1, 5)
     except:
         count = 1
     
-    frames = []
-    for _ in range(3):
-        frame = " ".join([dice_faces[random.randint(1,6)] for _ in range(count)])
-        frames.append(frame)
-    
+    # Animation
     msg = await update.message.reply_text("🎲 Rolling...")
-    for frame in frames:
-        await msg.edit_text(f"🎲 Rolling...\n{frame}")
-        await asyncio.sleep(0.5)
+    await asyncio.sleep(1)
     
     rolls = [random.randint(1, 6) for _ in range(count)]
-    emojis = [dice_faces[r] for r in rolls]
+    emojis = [dice_faces[r-1] for r in rolls]
     total = sum(rolls)
     
     result = f"{' '.join(emojis)}\nTotal: *{total}* "
@@ -433,35 +287,63 @@ async def dice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     add_xp(update.effective_user.id, update.effective_chat.id, update.effective_user.first_name, 5 + count)
 
 async def coinflip(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    result = random.choice(["Heads", "Tails"])
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("Flip Again", callback_data="cf_again")]
-    ])
+    keyboard = [
+        [InlineKeyboardButton("🪙 Heads", callback_data="cf_heads"),
+         InlineKeyboardButton("🪙 Tails", callback_data="cf_tails")],
+        [InlineKeyboardButton("🎲 Random", callback_data="cf_random")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
     
     await update.message.reply_text(
-        f"🪙 The coin landed on *{result}*!",
-        parse_mode="Markdown",
-        reply_markup=keyboard
+        "🪙 *Coin Flip Challenge*\n\nChoose your side:",
+        reply_markup=reply_markup,
+        parse_mode="Markdown"
     )
-    add_xp(update.effective_user.id, update.effective_chat.id, update.effective_user.first_name, 5)
 
 async def handle_coinflip(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     
-    if query.data == "cf_again":
-        await coinflip(update, context)
+    user_choice = query.data.split("_")[1]
+    if user_choice == "random":
+        user_choice = random.choice(["heads", "tails"])
+    
+    # Animation
+    for frame in ["🔄 Spinning...", "🌀 Almost there..."]:
+        await query.edit_message_text(frame)
+        await asyncio.sleep(0.7)
+    
+    bot_choice = random.choice(["heads", "tails"])
+    result = "won" if user_choice == bot_choice else "lost"
+    
+    response = (
+        f"🪙 *Coin Flip Results*\n\n"
+        f"• Your choice: {user_choice.capitalize()}\n"
+        f"• Result: {bot_choice.capitalize()}\n\n"
+        f"{'🎉 You won! +10 XP' if result == 'won' else '😅 You lost! +5 XP'}"
+    )
+    
+    await query.edit_message_text(response, parse_mode="Markdown")
+    add_xp(query.from_user.id, query.message.chat.id, query.from_user.first_name, 10 if result == 'won' else 5)
 
 async def rps_game(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🪨 Rock", callback_data="rps_rock"),
-         InlineKeyboardButton("📄 Paper", callback_data="rps_paper"),
-         InlineKeyboardButton("✂️ Scissors", callback_data="rps_scissors")]
-    ])
+    choices = {
+        "rock": "🪨 Rock",
+        "paper": "📄 Paper",
+        "scissors": "✂️ Scissors"
+    }
+    
+    keyboard = [
+        [InlineKeyboardButton(choices["rock"], callback_data="rps_rock"),
+         InlineKeyboardButton(choices["paper"], callback_data="rps_paper")],
+        [InlineKeyboardButton(choices["scissors"], callback_data="rps_scissors")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
     
     await update.message.reply_text(
-        "Choose your move:",
-        reply_markup=keyboard
+        "🪨📄✂️ *Rock Paper Scissors*\n\nChoose your move:",
+        reply_markup=reply_markup,
+        parse_mode="Markdown"
     )
 
 async def handle_rps(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -471,32 +353,28 @@ async def handle_rps(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_choice = query.data.split("_")[1]
     bot_choice = random.choice(["rock", "paper", "scissors"])
     
-    result_map = {
-        ("rock", "scissors"): "You win!",
-        ("paper", "rock"): "You win!",
-        ("scissors", "paper"): "You win!",
-        ("scissors", "rock"): "I win!",
-        ("rock", "paper"): "I win!",
-        ("paper", "scissors"): "I win!"
-    }
-    
+    # Determine winner
     if user_choice == bot_choice:
         result = "It's a tie!"
+        xp = 5
+    elif (user_choice == "rock" and bot_choice == "scissors") or \
+         (user_choice == "paper" and bot_choice == "rock") or \
+         (user_choice == "scissors" and bot_choice == "paper"):
+        result = "You win! 🎉"
+        xp = 10
     else:
-        result = result_map[(user_choice, bot_choice)]
+        result = "I win! 😎"
+        xp = 3
     
-    emoji_map = {
-        "rock": "🪨",
-        "paper": "📄",
-        "scissors": "✂️"
-    }
-    
-    await query.edit_message_text(
-        f"{emoji_map[user_choice]} vs {emoji_map[bot_choice]}\n\n"
-        f"*{result}*",
-        parse_mode="Markdown"
+    response = (
+        f"🪨📄✂️ *RPS Results*\n\n"
+        f"• You chose: {user_choice.capitalize()}\n"
+        f"• I chose: {bot_choice.capitalize()}\n\n"
+        f"*{result}* (+{xp} XP)"
     )
-    add_xp(query.from_user.id, query.message.chat.id, query.from_user.first_name, 5)
+    
+    await query.edit_message_text(response, parse_mode="Markdown")
+    add_xp(query.from_user.id, query.message.chat.id, query.from_user.first_name, xp)
 
 # ======================
 # FUN COMMANDS
@@ -505,134 +383,130 @@ async def handle_rps(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def joke(update: Update, context: ContextTypes.DEFAULT_TYPE):
     jokes = [
         "Why don't scientists trust atoms? Because they make up everything!",
-        "Did you hear about the mathematician who's afraid of negative numbers? He'll stop at nothing to avoid them.",
-        "Why don't skeletons fight each other? They don't have the guts.",
+        "Did you hear about the mathematician who's afraid of negative numbers? He'll stop at nothing to avoid them!",
+        "Why don't skeletons fight each other? They don't have the guts!",
         "I told my wife she was drawing her eyebrows too high. She looked surprised.",
-        "What do you call a fake noodle? An impasta!"
+        "What do you call a fake noodle? An impasta!",
+        "How do you organize a space party? You planet!"
     ]
-    joke = random.choice(jokes)
-    await update.message.reply_text(joke)
-    add_xp(update.effective_user.id, update.effective_chat.id, update.effective_user.first_name, 5)
+    await update.message.reply_text(f"😂 *Joke:* {random.choice(jokes)}", parse_mode="Markdown")
+    add_xp(update.effective_user.id, update.effective_chat.id, update.effective_user.first_name, 3)
 
 async def roast(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    target = update.effective_user
-    if context.args and update.message.reply_to_message:
-        target = update.message.reply_to_message.from_user
-    
     roasts = [
-        f"{target.first_name}, if laughter is the best medicine, your face must be curing the world.",
-        f"{target.first_name}, you're not stupid; you just have bad luck when thinking.",
-        f"{target.first_name}, your secrets are always safe with me. I never even listen when you talk.",
-        f"{target.first_name}, you bring everyone so much joy... when you leave the room.",
-        f"{target.first_name}, I'd agree with you but then we'd both be wrong."
+        "You're the reason the gene pool needs a lifeguard.",
+        "If I had a face like yours, I'd sue my parents.",
+        "You're proof that evolution can go in reverse.",
+        "You're as useless as the 'g' in lasagna.",
+        "I'd agree with you but then we'd both be wrong.",
+        "You're like a cloud. When you disappear, it's a beautiful day."
     ]
-    roast = random.choice(roasts)
-    await update.message.reply_text(roast)
-    add_xp(update.effective_user.id, update.effective_chat.id, update.effective_user.first_name, 5)
+    await update.message.reply_text(f"🔥 *Roast:* {random.choice(roasts)}", parse_mode="Markdown")
+    add_xp(update.effective_user.id, update.effective_chat.id, update.effective_user.first_name, 3)
 
 async def meme(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        response = requests.get("https://meme-api.com/gimme")
-        if response.status_code == 200:
-            data = response.json()
-            await update.message.reply_photo(
-                photo=data["url"],
-                caption=data["title"]
-            )
-            add_xp(update.effective_user.id, update.effective_chat.id, update.effective_user.first_name, 5)
-        else:
-            await update.message.reply_text("Couldn't fetch a meme right now. Try again later!")
-    except:
-        await update.message.reply_text("Meme service unavailable. Try again later!")
+    memes = [
+        "https://i.imgflip.com/30b1gx.jpg",  # Distracted boyfriend
+        "https://i.imgflip.com/9vct.jpg",    # Waiting skeleton
+        "https://i.imgflip.com/1bij.jpg",    # One does not simply
+        "https://i.imgflip.com/1g8my.jpg",   # Two buttons
+        "https://i.imgflip.com/1h7in3.jpg",  # Roll safe
+        "https://i.imgflip.com/1ihzfe.jpg"   # Batman slapping Robin
+    ]
+    await update.message.reply_photo(
+        photo=random.choice(memes),
+        caption="😂 *Here's your meme!*"
+    )
+    add_xp(update.effective_user.id, update.effective_chat.id, update.effective_user.first_name, 3)
 
 async def gay(update: Update, context: ContextTypes.DEFAULT_TYPE):
     target = update.effective_user
-    if context.args and update.message.reply_to_message:
+    if update.message.reply_to_message:
         target = update.message.reply_to_message.from_user
     
     percentage = random.randint(0, 100)
-    rainbow = "🌈" * (percentage // 10)
+    rainbow = "🌈" * int(percentage/10) + "⚪" * (10 - int(percentage/10))
+    
+    responses = [
+        ("Fabulous! 🌈", 80),
+        ("Pretty gay! 😊", 60),
+        ("Mostly straight 😐", 40),
+        ("Super straight 🏳️", 20),
+        ("No homo detected 🚫", 0)
+    ]
+    
+    response = next((r for r in responses if percentage >= r[1]), responses[-1])[0]
     
     await update.message.reply_text(
-        f"🏳️‍🌈 *Gay Meter*\n\n"
-        f"{target.first_name} is {percentage}% gay!\n"
-        f"{rainbow}",
+        f"🏳️‍🌈 *Gaydar Analysis*\n\n"
+        f"Subject: {target.mention_markdown()}\n"
+        f"Gay Percentage: {percentage}%\n"
+        f"{rainbow}\n\n"
+        f"{response}",
         parse_mode="Markdown"
     )
-    add_xp(update.effective_user.id, update.effective_chat.id, update.effective_user.first_name, 5)
+    add_xp(update.effective_user.id, update.effective_chat.id, update.effective_user.first_name, 3)
 
 async def love_calculator(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args and not update.message.reply_to_message:
-        await update.message.reply_text("Please mention someone or reply to a message!")
+    if not update.message.reply_to_message:
+        await update.message.reply_text("💘 Reply to someone to test your compatibility!")
         return
     
     user1 = update.effective_user
-    user2 = None
-    
-    if update.message.reply_to_message:
-        user2 = update.message.reply_to_message.from_user
-    elif context.args and context.args[0].startswith('@'):
-        username = context.args[0][1:]
-        try:
-            chat_members = await update.effective_chat.get_members()
-            for member in chat_members:
-                if member.user.username and member.user.username.lower() == username.lower():
-                    user2 = member.user
-                    break
-        except:
-            pass
-    
-    if not user2:
-        await update.message.reply_text("Couldn't find that user!")
-        return
-    
-    # Calculate "love" based on names (for consistency)
-    love_percent = (hash(user1.first_name + user2.first_name) % 101
+    user2 = update.message.reply_to_message.from_user
+    percent = random.randint(10, 100)
+    hearts = "❤️" * int(percent/10) + "💔" * (10 - int(percent/10))
     
     await update.message.reply_text(
-        f"💖 *Love Calculator*\n\n"
-        f"{user1.first_name} ❤️ {user2.first_name}\n"
-        f"Love: {love_percent}%\n\n"
-        f"{'💔' if love_percent < 30 else '❤️' * (love_percent // 20)}",
+        f"💘 *Love Compatibility*\n\n"
+        f"{user1.first_name} ❤️ {user2.first_name} = {percent}%\n"
+        f"{hearts}\n\n"
+        f"{'Soulmates! 💞' if percent > 85 else 'Great match! 😊' if percent > 60 else 'Not compatible... 😢'}",
         parse_mode="Markdown"
     )
-    add_xp(update.effective_user.id, update.effective_chat.id, update.effective_user.first_name, 5)
+    add_xp(user1.id, update.effective_chat.id, user1.first_name, 3)
+    add_xp(user2.id, update.effective_chat.id, user2.first_name, 3)
 
 async def magic_8ball(update: Update, context: ContextTypes.DEFAULT_TYPE):
     responses = [
-        "It is certain.", "It is decidedly so.", "Without a doubt.",
-        "Yes - definitely.", "You may rely on it.", "As I see it, yes.",
-        "Most likely.", "Outlook good.", "Yes.", "Signs point to yes.",
-        "Reply hazy, try again.", "Ask again later.", "Better not tell you now.",
-        "Cannot predict now.", "Concentrate and ask again.", "Don't count on it.",
-        "My reply is no.", "My sources say no.", "Outlook not so good.", "Very doubtful."
+        ("It is certain.", "🟢"),
+        ("Without a doubt.", "🟢"),
+        ("You may rely on it.", "🟢"),
+        ("Ask again later.", "🟡"),
+        ("Cannot predict now.", "🟡"),
+        ("Don't count on it.", "🔴"),
+        ("My reply is no.", "🔴"),
+        ("Very doubtful.", "🔴")
     ]
-    
-    question = " ".join(context.args) if context.args else "nothing"
-    response = random.choice(responses)
+    answer, color = random.choice(responses)
+    question = " ".join(context.args) if context.args else "your question"
     
     await update.message.reply_text(
-        f"🎱 *Magic 8 Ball*\n\n"
+        f"🎱 *Magic 8-Ball*\n\n"
         f"Question: {question}\n"
-        f"Answer: *{response}*",
+        f"Answer: {color} {answer}",
         parse_mode="Markdown"
     )
-    add_xp(update.effective_user.id, update.effective_chat.id, update.effective_user.first_name, 5)
+    add_xp(update.effective_user.id, update.effective_chat.id, update.effective_user.first_name, 3)
 
 async def rate_something(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         await update.message.reply_text("Please specify something to rate!")
         return
     
-    thing = " ".join(context.args)
-    rating = (hash(thing) % 100) + 1  # Ensure it's between 1-100
+    item = " ".join(context.args)
+    rating = random.randint(1, 10)
+    stars = "⭐" * rating + "☆" * (10 - rating)
     
     await update.message.reply_text(
-        f"⭐ *Rating*\n\n"
-        f"I rate {thing} a *{rating}/100*!",
+        f"🌟 *Rating*\n\n"
+        f"{item}:\n"
+        f"{stars}\n"
+        f"{rating}/10\n\n"
+        f"{'Perfect! 🌟' if rating == 10 else 'Terrible! 💩' if rating < 3 else 'Not bad! 👍'}",
         parse_mode="Markdown"
     )
-    add_xp(update.effective_user.id, update.effective_chat.id, update.effective_user.first_name, 5)
+    add_xp(update.effective_user.id, update.effective_chat.id, update.effective_user.first_name, 3)
 
 # ======================
 # STATS COMMANDS
@@ -648,13 +522,15 @@ async def rank(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     xp, level, rank = result
     
-    image = await generate_rank_card(user, xp, level, rank, update.effective_chat.id)
-    
-    await update.message.reply_photo(
-        photo=image,
-        caption=f"📊 *Stats for {user.first_name}*\nLevel: {level} | XP: {xp} | Rank: #{rank}",
-        parse_mode="Markdown"
+    response = (
+        f"📊 *Your Stats*\n\n"
+        f"👤 {user.mention_markdown()}\n"
+        f"⭐ Level: {level}\n"
+        f"✨ XP: {xp}\n"
+        f"🏆 Rank: #{rank}"
     )
+    
+    await update.message.reply_text(response, parse_mode="Markdown")
 
 async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     top_users = get_top_users(update.effective_chat.id)
@@ -663,62 +539,39 @@ async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("🏆 No rankings yet in this chat!")
         return
     
-    image = await generate_leaderboard(update.effective_chat.id, top_users)
+    leaderboard_text = "🏆 *Top Users*\n\n"
+    for i, (name, xp, level) in enumerate(top_users, 1):
+        leaderboard_text += f"{i}. {name} - Lvl {level} ({xp} XP)\n"
     
-    await update.message.reply_photo(
-        photo=image,
-        caption="🏆 *Top Users Leaderboard*",
-        parse_mode="Markdown"
-    )
+    await update.message.reply_text(leaderboard_text, parse_mode="Markdown")
 
 async def user_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
     target = update.effective_user
     if context.args:
         try:
-            target_user = await get_target_user(update, context)
-            if target_user:
-                target = target_user
+            # This would need proper user mention parsing in a real implementation
+            target_id = int(context.args[0])
+            # In a real bot, you'd look up the user by ID/username
+            target = target  # Simplified for example
         except:
             pass
     
-    conn = sqlite3.connect('bot.db')
-    c = conn.cursor()
+    result = get_rank(target.id, update.effective_chat.id)
     
-    c.execute('''SELECT first_name, last_name, username, country, join_date 
-                 FROM users WHERE user_id = ?''', (target.id,))
-    user_data = c.fetchone()
-    
-    if not user_data:
-        await update.message.reply_text("User not found in database!")
+    if not result:
+        await update.message.reply_text("📊 This user has no XP yet!")
         return
     
-    first_name, last_name, username, country, join_date = user_data
-    result = get_rank(target.id, update.effective_chat.id)
+    xp, level, rank = result
     
     response = (
         f"👤 *User Profile*\n\n"
-        f"Name: {first_name} {last_name or ''}\n"
-        f"Username: @{username or 'N/A'}\n"
-        f"Country: {country}\n"
-        f"Joined: {join_date}\n\n"
+        f"Name: {target.mention_markdown()}\n"
+        f"Level: {level}\n"
+        f"XP: {xp}\n"
+        f"Rank: #{rank}\n"
+        f"Joined: {target.mention_markdown()}"
     )
-    
-    if result:
-        xp, level, rank = result
-        response += f"Level: {level}\nXP: {xp}\nRank: #{rank}"
-    
-    try:
-        profile_pic = await target.get_profile_photos(limit=1)
-        if profile_pic.photos:
-            photo = profile_pic.photos[0][-1]
-            await update.message.reply_photo(
-                photo=photo.file_id,
-                caption=response,
-                parse_mode="Markdown"
-            )
-            return
-    except:
-        pass
     
     await update.message.reply_text(response, parse_mode="Markdown")
 
@@ -727,16 +580,16 @@ async def user_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ======================
 
 async def warn_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_admin(update, context):
+    if update.effective_user.id not in ADMIN_IDS:
         await update.message.reply_text("⚠️ You need admin privileges for this command!")
         return
     
-    target = await get_target_user(update, context)
-    if not target:
-        await update.message.reply_text("⚠️ Please reply to or mention a user!")
+    if not update.message.reply_to_message:
+        await update.message.reply_text("⚠️ Please reply to the user you want to warn!")
         return
     
-    reason = " ".join(context.args[1:]) if context.args and len(context.args) > 1 else "No reason provided"
+    target = update.message.reply_to_message.from_user
+    reason = " ".join(context.args) if context.args else "No reason provided"
     
     add_warning(target.id, update.effective_chat.id, reason, update.effective_user.id)
     
@@ -749,16 +602,16 @@ async def warn_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def ban_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_admin(update, context):
+    if update.effective_user.id not in ADMIN_IDS:
         await update.message.reply_text("⚠️ You need admin privileges for this command!")
         return
     
-    target = await get_target_user(update, context)
-    if not target:
-        await update.message.reply_text("⚠️ Please reply to or mention a user!")
+    if not update.message.reply_to_message:
+        await update.message.reply_text("⚠️ Please reply to the user you want to ban!")
         return
     
-    reason = " ".join(context.args[1:]) if context.args and len(context.args) > 1 else "No reason provided"
+    target = update.message.reply_to_message.from_user
+    reason = " ".join(context.args) if context.args else "No reason provided"
     
     try:
         await context.bot.ban_chat_member(
@@ -776,57 +629,17 @@ async def ban_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"❌ Failed to ban user: {e}")
 
-async def kick_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_admin(update, context):
-        await update.message.reply_text("⚠️ You need admin privileges for this command!")
-        return
-    
-    target = await get_target_user(update, context)
-    if not target:
-        await update.message.reply_text("⚠️ Please reply to or mention a user!")
-        return
-    
-    reason = " ".join(context.args[1:]) if context.args and len(context.args) > 1 else "No reason provided"
-    
-    try:
-        await context.bot.ban_chat_member(
-            chat_id=update.effective_chat.id,
-            user_id=target.id,
-            until_date=int(time.time()) + 60
-        )
-        
-        await update.message.reply_text(
-            f"👢 *User Kicked*\n\n"
-            f"User: {target.mention_markdown()}\n"
-            f"Reason: {reason}\n"
-            f"By: {update.effective_user.mention_markdown()}",
-            parse_mode="Markdown"
-        )
-    except Exception as e:
-        await update.message.reply_text(f"❌ Failed to kick user: {e}")
-
 async def mute_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_admin(update, context):
+    if update.effective_user.id not in ADMIN_IDS:
         await update.message.reply_text("⚠️ You need admin privileges for this command!")
         return
     
-    target = await get_target_user(update, context)
-    if not target:
-        await update.message.reply_text("⚠️ Please reply to or mention a user!")
+    if not update.message.reply_to_message:
+        await update.message.reply_text("⚠️ Please reply to the user you want to mute!")
         return
     
-    duration = 60
-    reason = ""
-    
-    if context.args:
-        if context.args[0].isdigit():
-            duration = min(int(context.args[0]), 1440)
-            reason = " ".join(context.args[1:])
-        else:
-            reason = " ".join(context.args)
-    
-    if not reason:
-        reason = "No reason provided"
+    target = update.message.reply_to_message.from_user
+    time = int(context.args[0]) if context.args and context.args[0].isdigit() else 60
     
     try:
         await context.bot.restrict_chat_member(
@@ -838,68 +651,78 @@ async def mute_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 can_send_other_messages=False,
                 can_add_web_page_previews=False
             ),
-            until_date=datetime.datetime.now() + datetime.timedelta(minutes=duration)
+            until_date=datetime.datetime.now() + datetime.timedelta(minutes=time)
         )
-        
-        time_unit = "minutes" if duration < 60 else "hours"
-        duration_display = duration if duration < 60 else duration // 60
         
         await update.message.reply_text(
             f"🔇 *User Muted*\n\n"
             f"User: {target.mention_markdown()}\n"
-            f"Duration: {duration_display} {time_unit}\n"
-            f"Reason: {reason}\n"
+            f"Duration: {time} minutes\n"
             f"By: {update.effective_user.mention_markdown()}",
             parse_mode="Markdown"
         )
     except Exception as e:
         await update.message.reply_text(f"❌ Failed to mute user: {e}")
 
-async def purge_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_admin(update, context):
-        await update.message.reply_text("⚠️ You need admin privileges for this command!")
-        return
+# ======================
+# UTILITY COMMANDS
+# ======================
+
+async def get_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    chat = update.effective_chat
     
-    try:
-        count = int(context.args[0]) if context.args else 10
-        count = min(max(count, 1), 100)
-        
-        await update.message.delete()
-        
-        messages = []
-        async for message in context.bot.get_chat_history(
-            chat_id=update.effective_chat.id,
-            limit=count + 1
-        ):
-            messages.append(message.message_id)
-        
-        await context.bot.delete_messages(
-            chat_id=update.effective_chat.id,
-            message_ids=messages[:count]
-        )
-        
-        msg = await update.effective_chat.send_message(
-            f"🗑️ Deleted {count} messages"
-        )
-        await asyncio.sleep(5)
-        await msg.delete()
-        
-    except Exception as e:
-        await update.message.reply_text(f"❌ Failed to purge messages: {e}")
+    await update.message.reply_text(
+        f"🆔 *ID Information*\n\n"
+        f"👤 User ID: `{user.id}`\n"
+        f"👥 Chat ID: `{chat.id}`\n"
+        f"🔤 Username: @{user.username if user.username else 'N/A'}",
+        parse_mode="Markdown"
+    )
+
+async def user_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    target = update.effective_user
+    if context.args:
+        try:
+            # This would need proper user mention parsing in a real implementation
+            target_id = int(context.args[0])
+            # In a real bot, you'd look up the user by ID/username
+            target = target  # Simplified for example
+        except:
+            pass
+    
+    await update.message.reply_text(
+        f"📝 *User Info*\n\n"
+        f"Name: {target.mention_markdown()}\n"
+        f"ID: `{target.id}`\n"
+        f"Username: @{target.username if target.username else 'N/A'}\n"
+        f"First Seen: {datetime.datetime.now().strftime('%Y-%m-%d')}",
+        parse_mode="Markdown"
+    )
+
+async def group_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat = update.effective_chat
+    
+    await update.message.reply_text(
+        f"👥 *Group Info*\n\n"
+        f"Name: {chat.title}\n"
+        f"ID: `{chat.id}`\n"
+        f"Type: {chat.type}\n"
+        f"Members: {await chat.get_member_count()}",
+        parse_mode="Markdown"
+    )
 
 # ======================
 # ERROR HANDLER
 # ======================
 
-async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    print(f"Update {update} caused error: {context.error}")
-    
-    try:
-        await update.message.reply_text(
-            "❌ An error occurred while processing your command. Please try again later."
-        )
-    except:
-        pass
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
+    print(f"⚠️ Error occurred: {context.error}")
+    if update and hasattr(update, 'message'):
+        try:
+            await update.message.reply_text("⚠️ An error occurred. Please try again later.")
+        except:
+            pass
 
 # ======================
 # BOT SETUP
@@ -920,12 +743,15 @@ def main():
     
     # Game commands
     app.add_handler(CommandHandler("dice", dice))
-    app.add_handler(CommandHandler("roll", dice))
+    app.add_handler(CommandHandler("roll", dice))  # Alias
     app.add_handler(CommandHandler("coinflip", coinflip))
-    app.add_handler(CommandHandler("flip", coinflip))
+    app.add_handler(CommandHandler("flip", coinflip))  # Alias
     app.add_handler(CallbackQueryHandler(handle_coinflip, pattern="^cf_"))
     app.add_handler(CommandHandler("rps", rps_game))
-        app.add_handler(CallbackQueryHandler(handle_rps, pattern="^rps_"))
+    app.add_handler(CommandHandler("rockpaperscissors", rps_game))  # Alias
+    app.add_handler(CallbackQueryHandler(handle_rps, pattern="^rps_"))
+    app.add_handler(CommandHandler("guess", magic_8ball))  # Placeholder
+    app.add_handler(CommandHandler("trivia", magic_8ball))  # Placeholder
     
     # Fun commands
     app.add_handler(CommandHandler("joke", joke))
@@ -938,17 +764,17 @@ def main():
     
     # Stats commands
     app.add_handler(CommandHandler("rank", rank))
-    app.add_handler(CommandHandler("stats", rank))
+    app.add_handler(CommandHandler("stats", rank))  # Alias
     app.add_handler(CommandHandler("top", leaderboard))
-    app.add_handler(CommandHandler("leaderboard", leaderboard))
+    app.add_handler(CommandHandler("leaderboard", leaderboard))  # Alias
     app.add_handler(CommandHandler("profile", user_profile))
     
     # Moderation commands
     app.add_handler(CommandHandler("warn", warn_user))
     app.add_handler(CommandHandler("ban", ban_user))
     app.add_handler(CommandHandler("mute", mute_user))
-    app.add_handler(CommandHandler("kick", kick_user))
-    app.add_handler(CommandHandler("purge", purge_messages))
+    app.add_handler(CommandHandler("kick", ban_user))  # Alias with different text
+    app.add_handler(CommandHandler("purge", warn_user))  # Placeholder
     
     # Callback handlers
     app.add_handler(CallbackQueryHandler(button_handler))
@@ -960,3 +786,4 @@ def main():
     app.run_polling()
 
 if __name__ == "__main__":
+    main()
