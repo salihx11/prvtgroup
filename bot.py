@@ -139,7 +139,7 @@ init_db()
 # ======================
 
 BOT_TOKEN = "7406932492:AAGFveg9HUKC7B6fx9wHHboe3d_DZBWhppc"
-ADMIN_IDS = [123456789]  # Replace with your admin user IDs
+ADMIN_IDS = [1362321291]  # Replace with your admin user IDs
 
 # ======================
 # CORE FUNCTIONS
