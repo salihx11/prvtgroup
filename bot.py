@@ -4,6 +4,7 @@ import os
 import asyncio
 import sqlite3
 import requests
+import time
 from PIL import Image, ImageDraw, ImageFont
 from io import BytesIO
 from telegram import (
@@ -107,7 +108,7 @@ def get_rank(user_id, chat_id):
     rank = c.fetchone()[0] + 1
     
     conn.close()
-    return (xp, int(level), rank)
+    return (xp, int(level), rank
 
 def get_top_users(chat_id, limit=10):
     conn = sqlite3.connect('bot.db')
@@ -136,8 +137,6 @@ def add_warning(user_id, chat_id, reason, admin_id):
     conn.close()
 
 def get_user_country(user_id):
-    # In a real implementation, you'd need a way to get user's country
-    # This is a placeholder - you could use IP geolocation or other methods
     return "Unknown"
 
 # Initialize database
@@ -148,11 +147,9 @@ init_db()
 # ======================
 
 async def generate_rank_card(user, xp, level, rank, chat_id):
-    # Create blank image
     img = Image.new('RGB', (800, 300), color=(54, 57, 63))
     draw = ImageDraw.Draw(img)
     
-    # Load fonts
     try:
         title_font = ImageFont.truetype("arialbd.ttf", 40)
         normal_font = ImageFont.truetype("arial.ttf", 30)
@@ -160,7 +157,6 @@ async def generate_rank_card(user, xp, level, rank, chat_id):
         title_font = ImageFont.load_default()
         normal_font = ImageFont.load_default()
     
-    # Get user profile photo
     try:
         profile_pic = await user.get_profile_photos(limit=1)
         if profile_pic.photos:
@@ -170,7 +166,6 @@ async def generate_rank_card(user, xp, level, rank, chat_id):
             await photo_file.download_to_memory(photo_bytes)
             profile_img = Image.open(photo_bytes).resize((200, 200))
             
-            # Make circular mask
             mask = Image.new('L', (200, 200), 0)
             draw_mask = ImageDraw.Draw(mask)
             draw_mask.ellipse((0, 0, 200, 200), fill=255)
@@ -179,20 +174,17 @@ async def generate_rank_card(user, xp, level, rank, chat_id):
     except:
         pass
     
-    # Draw user info
     draw.text((300, 50), f"{user.first_name}", font=title_font, fill=(255, 255, 255))
     draw.text((300, 120), f"Level: {level}", font=normal_font, fill=(200, 200, 200))
     draw.text((300, 160), f"XP: {xp}", font=normal_font, fill=(200, 200, 200))
     draw.text((300, 200), f"Rank: #{rank}", font=normal_font, fill=(200, 200, 200))
     
-    # XP progress bar
     xp_needed = level * 1000
     progress = min(xp % 1000 / 1000, 1.0)
     draw.rectangle([300, 250, 300 + 400 * progress, 270], fill=(114, 137, 218))
     draw.rectangle([300, 250, 700, 270], outline=(255, 255, 255), width=2)
     draw.text((710, 240), f"{int(progress*100)}%", font=normal_font, fill=(255, 255, 255))
     
-    # Save to buffer
     buf = BytesIO()
     img.save(buf, format='PNG')
     buf.seek(0)
@@ -210,10 +202,8 @@ async def generate_leaderboard(chat_id, top_users):
         title_font = ImageFont.load_default()
         normal_font = ImageFont.load_default()
     
-    # Title
     draw.text((50, 30), "🏆 Leaderboard", font=title_font, fill=(255, 255, 255))
     
-    # User entries
     for i, (name, xp, level, user_id) in enumerate(top_users, 1):
         y_pos = 100 + (i-1)*60
         draw.text((100, y_pos), f"{i}. {name}", font=normal_font, fill=(255, 255, 255))
@@ -231,6 +221,7 @@ async def generate_leaderboard(chat_id, top_users):
 # ======================
 
 BOT_TOKEN = "7406932492:AAGFveg9HUKC7B6fx9wHHboe3d_DZBWhppc"
+ADMIN_IDS = []  # Add your admin user IDs here
 
 # ======================
 # MODERATION UTILITIES
@@ -276,6 +267,100 @@ async def get_target_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # CORE FUNCTIONS
 # ======================
 
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    add_user(user.id, user.first_name, user.last_name or "", user.username or "")
+    
+    await update.message.reply_text(
+        f"👋 Hello {user.first_name}! I'm your friendly group bot.\n\n"
+        "Use /help to see all available commands!",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("Help", callback_data="help")]
+        ])
+    )
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    help_text = """
+🤖 *Bot Commands*
+
+🎲 *Games:*
+/dice [count] - Roll dice(s)
+/coinflip - Flip a coin
+/rps - Play Rock Paper Scissors
+
+📊 *Stats:*
+/rank - Check your rank
+/top - Show leaderboard
+/profile - Show user profile
+
+🛡️ *Moderation (Admin only):*
+/warn [user] [reason] - Warn a user
+/mute [user] [duration] [reason] - Mute a user
+/kick [user] [reason] - Kick a user
+/ban [user] [reason] - Ban a user
+/purge [count] - Delete messages
+
+😄 *Fun:*
+/joke - Get a random joke
+/roast - Roast someone
+/meme - Get a random meme
+/love @user - Calculate love percentage
+/8ball [question] - Magic 8 ball
+/rate [something] - Rate something
+
+ℹ️ *Info:*
+/id - Get your user ID
+/info - Get your info
+/groupinfo - Get group info
+"""
+    await update.message.reply_text(help_text, parse_mode="Markdown")
+
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    if query.data == "help":
+        await help_command(update, context)
+
+async def get_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    chat = update.effective_chat
+    
+    await update.message.reply_text(
+        f"🆔 *ID Information*\n\n"
+        f"• Your ID: `{user.id}`\n"
+        f"• Chat ID: `{chat.id}`\n"
+        f"• Username: @{user.username or 'N/A'}",
+        parse_mode="Markdown"
+    )
+
+async def user_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    await update.message.reply_text(
+        f"👤 *User Information*\n\n"
+        f"• Name: {user.full_name}\n"
+        f"• Username: @{user.username or 'N/A'}\n"
+        f"• ID: `{user.id}`\n"
+        f"• Language: {user.language_code or 'Unknown'}",
+        parse_mode="Markdown"
+    )
+
+async def group_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat = update.effective_chat
+    
+    if chat.type == "private":
+        await update.message.reply_text("This command only works in groups!")
+        return
+    
+    await update.message.reply_text(
+        f"👥 *Group Information*\n\n"
+        f"• Title: {chat.title}\n"
+        f"• ID: `{chat.id}`\n"
+        f"• Type: {chat.type}\n"
+        f"• Members: {chat.get_member_count() if hasattr(chat, 'get_member_count') else 'Unknown'}",
+        parse_mode="Markdown"
+    )
+
 async def welcome_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for new_user in update.message.new_chat_members:
         if new_user.is_bot and new_user.id == context.bot.id:
@@ -300,10 +385,8 @@ async def welcome_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE)
             )
             add_xp(new_user.id, update.message.chat.id, new_user.first_name, 20)
 
-# ... [rest of your existing core functions like start, help_command, button_handler] ...
-
 # ======================
-# IMPROVED GAME COMMANDS
+# GAME COMMANDS
 # ======================
 
 async def dice(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -321,7 +404,6 @@ async def dice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except:
         count = 1
     
-    # Animation frames
     frames = []
     for _ in range(3):
         frame = " ".join([dice_faces[random.randint(1,6)] for _ in range(count)])
@@ -332,7 +414,6 @@ async def dice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text(f"🎲 Rolling...\n{frame}")
         await asyncio.sleep(0.5)
     
-    # Final roll
     rolls = [random.randint(1, 6) for _ in range(count)]
     emojis = [dice_faces[r] for r in rolls]
     total = sum(rolls)
@@ -351,10 +432,210 @@ async def dice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await msg.edit_text(result, parse_mode="Markdown")
     add_xp(update.effective_user.id, update.effective_chat.id, update.effective_user.first_name, 5 + count)
 
-# ... [rest of your game commands] ...
+async def coinflip(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    result = random.choice(["Heads", "Tails"])
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("Flip Again", callback_data="cf_again")]
+    ])
+    
+    await update.message.reply_text(
+        f"🪙 The coin landed on *{result}*!",
+        parse_mode="Markdown",
+        reply_markup=keyboard
+    )
+    add_xp(update.effective_user.id, update.effective_chat.id, update.effective_user.first_name, 5)
+
+async def handle_coinflip(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    if query.data == "cf_again":
+        await coinflip(update, context)
+
+async def rps_game(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🪨 Rock", callback_data="rps_rock"),
+         InlineKeyboardButton("📄 Paper", callback_data="rps_paper"),
+         InlineKeyboardButton("✂️ Scissors", callback_data="rps_scissors")]
+    ])
+    
+    await update.message.reply_text(
+        "Choose your move:",
+        reply_markup=keyboard
+    )
+
+async def handle_rps(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    user_choice = query.data.split("_")[1]
+    bot_choice = random.choice(["rock", "paper", "scissors"])
+    
+    result_map = {
+        ("rock", "scissors"): "You win!",
+        ("paper", "rock"): "You win!",
+        ("scissors", "paper"): "You win!",
+        ("scissors", "rock"): "I win!",
+        ("rock", "paper"): "I win!",
+        ("paper", "scissors"): "I win!"
+    }
+    
+    if user_choice == bot_choice:
+        result = "It's a tie!"
+    else:
+        result = result_map[(user_choice, bot_choice)]
+    
+    emoji_map = {
+        "rock": "🪨",
+        "paper": "📄",
+        "scissors": "✂️"
+    }
+    
+    await query.edit_message_text(
+        f"{emoji_map[user_choice]} vs {emoji_map[bot_choice]}\n\n"
+        f"*{result}*",
+        parse_mode="Markdown"
+    )
+    add_xp(query.from_user.id, query.message.chat.id, query.from_user.first_name, 5)
 
 # ======================
-# IMPROVED STATS COMMANDS
+# FUN COMMANDS
+# ======================
+
+async def joke(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    jokes = [
+        "Why don't scientists trust atoms? Because they make up everything!",
+        "Did you hear about the mathematician who's afraid of negative numbers? He'll stop at nothing to avoid them.",
+        "Why don't skeletons fight each other? They don't have the guts.",
+        "I told my wife she was drawing her eyebrows too high. She looked surprised.",
+        "What do you call a fake noodle? An impasta!"
+    ]
+    joke = random.choice(jokes)
+    await update.message.reply_text(joke)
+    add_xp(update.effective_user.id, update.effective_chat.id, update.effective_user.first_name, 5)
+
+async def roast(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    target = update.effective_user
+    if context.args and update.message.reply_to_message:
+        target = update.message.reply_to_message.from_user
+    
+    roasts = [
+        f"{target.first_name}, if laughter is the best medicine, your face must be curing the world.",
+        f"{target.first_name}, you're not stupid; you just have bad luck when thinking.",
+        f"{target.first_name}, your secrets are always safe with me. I never even listen when you talk.",
+        f"{target.first_name}, you bring everyone so much joy... when you leave the room.",
+        f"{target.first_name}, I'd agree with you but then we'd both be wrong."
+    ]
+    roast = random.choice(roasts)
+    await update.message.reply_text(roast)
+    add_xp(update.effective_user.id, update.effective_chat.id, update.effective_user.first_name, 5)
+
+async def meme(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        response = requests.get("https://meme-api.com/gimme")
+        if response.status_code == 200:
+            data = response.json()
+            await update.message.reply_photo(
+                photo=data["url"],
+                caption=data["title"]
+            )
+            add_xp(update.effective_user.id, update.effective_chat.id, update.effective_user.first_name, 5)
+        else:
+            await update.message.reply_text("Couldn't fetch a meme right now. Try again later!")
+    except:
+        await update.message.reply_text("Meme service unavailable. Try again later!")
+
+async def gay(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    target = update.effective_user
+    if context.args and update.message.reply_to_message:
+        target = update.message.reply_to_message.from_user
+    
+    percentage = random.randint(0, 100)
+    rainbow = "🌈" * (percentage // 10)
+    
+    await update.message.reply_text(
+        f"🏳️‍🌈 *Gay Meter*\n\n"
+        f"{target.first_name} is {percentage}% gay!\n"
+        f"{rainbow}",
+        parse_mode="Markdown"
+    )
+    add_xp(update.effective_user.id, update.effective_chat.id, update.effective_user.first_name, 5)
+
+async def love_calculator(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args and not update.message.reply_to_message:
+        await update.message.reply_text("Please mention someone or reply to a message!")
+        return
+    
+    user1 = update.effective_user
+    user2 = None
+    
+    if update.message.reply_to_message:
+        user2 = update.message.reply_to_message.from_user
+    elif context.args and context.args[0].startswith('@'):
+        username = context.args[0][1:]
+        try:
+            chat_members = await update.effective_chat.get_members()
+            for member in chat_members:
+                if member.user.username and member.user.username.lower() == username.lower():
+                    user2 = member.user
+                    break
+        except:
+            pass
+    
+    if not user2:
+        await update.message.reply_text("Couldn't find that user!")
+        return
+    
+    # Calculate "love" based on names (for consistency)
+    love_percent = (hash(user1.first_name + user2.first_name) % 101
+    
+    await update.message.reply_text(
+        f"💖 *Love Calculator*\n\n"
+        f"{user1.first_name} ❤️ {user2.first_name}\n"
+        f"Love: {love_percent}%\n\n"
+        f"{'💔' if love_percent < 30 else '❤️' * (love_percent // 20)}",
+        parse_mode="Markdown"
+    )
+    add_xp(update.effective_user.id, update.effective_chat.id, update.effective_user.first_name, 5)
+
+async def magic_8ball(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    responses = [
+        "It is certain.", "It is decidedly so.", "Without a doubt.",
+        "Yes - definitely.", "You may rely on it.", "As I see it, yes.",
+        "Most likely.", "Outlook good.", "Yes.", "Signs point to yes.",
+        "Reply hazy, try again.", "Ask again later.", "Better not tell you now.",
+        "Cannot predict now.", "Concentrate and ask again.", "Don't count on it.",
+        "My reply is no.", "My sources say no.", "Outlook not so good.", "Very doubtful."
+    ]
+    
+    question = " ".join(context.args) if context.args else "nothing"
+    response = random.choice(responses)
+    
+    await update.message.reply_text(
+        f"🎱 *Magic 8 Ball*\n\n"
+        f"Question: {question}\n"
+        f"Answer: *{response}*",
+        parse_mode="Markdown"
+    )
+    add_xp(update.effective_user.id, update.effective_chat.id, update.effective_user.first_name, 5)
+
+async def rate_something(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text("Please specify something to rate!")
+        return
+    
+    thing = " ".join(context.args)
+    rating = (hash(thing) % 100) + 1  # Ensure it's between 1-100
+    
+    await update.message.reply_text(
+        f"⭐ *Rating*\n\n"
+        f"I rate {thing} a *{rating}/100*!",
+        parse_mode="Markdown"
+    )
+    add_xp(update.effective_user.id, update.effective_chat.id, update.effective_user.first_name, 5)
+
+# ======================
+# STATS COMMANDS
 # ======================
 
 async def rank(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -367,7 +648,6 @@ async def rank(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     xp, level, rank = result
     
-    # Generate rank card image
     image = await generate_rank_card(user, xp, level, rank, update.effective_chat.id)
     
     await update.message.reply_photo(
@@ -383,7 +663,6 @@ async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("🏆 No rankings yet in this chat!")
         return
     
-    # Generate leaderboard image
     image = await generate_leaderboard(update.effective_chat.id, top_users)
     
     await update.message.reply_photo(
@@ -428,7 +707,6 @@ async def user_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
         xp, level, rank = result
         response += f"Level: {level}\nXP: {xp}\nRank: #{rank}"
     
-    # Try to send with profile photo
     try:
         profile_pic = await target.get_profile_photos(limit=1)
         if profile_pic.photos:
@@ -445,7 +723,7 @@ async def user_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(response, parse_mode="Markdown")
 
 # ======================
-# IMPROVED MODERATION COMMANDS
+# MODERATION COMMANDS
 # ======================
 
 async def warn_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -514,7 +792,7 @@ async def kick_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.ban_chat_member(
             chat_id=update.effective_chat.id,
             user_id=target.id,
-            until_date=int(time.time()) + 60  # Ban for 60 seconds (effectively a kick)
+            until_date=int(time.time()) + 60
         )
         
         await update.message.reply_text(
@@ -537,13 +815,12 @@ async def mute_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠️ Please reply to or mention a user!")
         return
     
-    # Parse mute duration (default 1 hour)
-    duration = 60  # Default 60 minutes
+    duration = 60
     reason = ""
     
     if context.args:
         if context.args[0].isdigit():
-            duration = min(int(context.args[0]), 1440)  # Max 24 hours
+            duration = min(int(context.args[0]), 1440)
             reason = " ".join(context.args[1:])
         else:
             reason = " ".join(context.args)
@@ -585,12 +862,10 @@ async def purge_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     try:
         count = int(context.args[0]) if context.args else 10
-        count = min(max(count, 1), 100)  # Limit to 100 messages
+        count = min(max(count, 1), 100)
         
-        # Delete the command message first
         await update.message.delete()
         
-        # Delete previous messages
         messages = []
         async for message in context.bot.get_chat_history(
             chat_id=update.effective_chat.id,
@@ -603,7 +878,6 @@ async def purge_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             message_ids=messages[:count]
         )
         
-        # Send confirmation (will be deleted after 5 seconds)
         msg = await update.effective_chat.send_message(
             f"🗑️ Deleted {count} messages"
         )
@@ -612,6 +886,20 @@ async def purge_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     except Exception as e:
         await update.message.reply_text(f"❌ Failed to purge messages: {e}")
+
+# ======================
+# ERROR HANDLER
+# ======================
+
+async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    print(f"Update {update} caused error: {context.error}")
+    
+    try:
+        await update.message.reply_text(
+            "❌ An error occurred while processing your command. Please try again later."
+        )
+    except:
+        pass
 
 # ======================
 # BOT SETUP
@@ -624,6 +912,7 @@ def main():
     app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, welcome_new_member))
     
     # Core commands
+    app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("id", get_id))
     app.add_handler(CommandHandler("info", user_info))
@@ -636,8 +925,7 @@ def main():
     app.add_handler(CommandHandler("flip", coinflip))
     app.add_handler(CallbackQueryHandler(handle_coinflip, pattern="^cf_"))
     app.add_handler(CommandHandler("rps", rps_game))
-    app.add_handler(CommandHandler("rockpaperscissors", rps_game))
-    app.add_handler(CallbackQueryHandler(handle_rps, pattern="^rps_"))
+        app.add_handler(CallbackQueryHandler(handle_rps, pattern="^rps_"))
     
     # Fun commands
     app.add_handler(CommandHandler("joke", joke))
@@ -672,4 +960,3 @@ def main():
     app.run_polling()
 
 if __name__ == "__main__":
-    main()
